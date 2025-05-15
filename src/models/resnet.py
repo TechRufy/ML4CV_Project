@@ -489,7 +489,7 @@ def ResNet18(
             pretrained_dir=pretrained_dir,
         )
     elif pretrained_on_imagenet:
-        weights = model_zoo.load_url(model_urls["resnet18"], model_dir="./")
+        weights = model_zoo.load_url(model_urls["resnet18"], model_dir="../../../../Downloads/")
         if "input_channels" in kwargs and kwargs["input_channels"] == 1:
             # sum the weights of the first convolution
             weights["conv1.weight"] = torch.sum(
@@ -529,7 +529,7 @@ def ResNet34(
             pretrained_dir=pretrained_dir,
         )
     elif pretrained_on_imagenet:
-        weights = model_zoo.load_url(model_urls["resnet34"], model_dir="./")
+        weights = model_zoo.load_url(model_urls["resnet34"], model_dir="../../../../Downloads/")
         if input_channels == 1:
             # sum the weights of the first convolution
             weights["conv1.weight"] = torch.sum(
@@ -549,7 +549,7 @@ def ResNet50(pretrained_on_imagenet=False, **kwargs):
     else:
         input_channels = 3
     if pretrained_on_imagenet:
-        weights = model_zoo.load_url(model_urls["resnet50"], model_dir="./")
+        weights = model_zoo.load_url(model_urls["resnet50"], model_dir="../../../../Downloads/")
         if input_channels == 1:
             # sum the weights of the first convolution
             weights["conv1.weight"] = torch.sum(

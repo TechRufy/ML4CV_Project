@@ -1,186 +1,97 @@
-########################################################
-#                                                      #
-#       author: omitted for anonymous submission       #
-#                                                      #
-#     credits and copyright coming upon publication    #
-#                                                      #
-########################################################
-
-
 import torch
-import torch.nn as nn
+from torch import nn
+from torchvision import models
+from torch.nn import functional as F
+from torchvision.models import ResNet18_Weights
 
-from src.models.resnet import NonBottleneck1D
-from src.models.model_utils import ConvBNAct
+from src.models.model_utils import ConvBNAct, NonBottleneck1D
 
-
-class Decoder(nn.Module):
-    def __init__(
-        self,
-        channels_in,
-        channels_decoder,
-        activation=nn.ReLU(inplace=True),
-        nr_decoder_blocks=1,
-        encoder_decoder_fusion="add",
-        upsampling_mode="bilinear",
-        num_classes=37,
-    ):
-        super().__init__()
-
-        self.decoder_module_1 = DecoderModule(
-            channels_in=channels_in,
-            channels_dec=channels_decoder[0],
-            activation=activation,
-            nr_decoder_blocks=nr_decoder_blocks[0],
-            encoder_decoder_fusion=encoder_decoder_fusion,
-            upsampling_mode=upsampling_mode,
-            num_classes=num_classes,
-        )
-
-        self.decoder_module_2 = DecoderModule(
-            channels_in=channels_decoder[0],
-            channels_dec=channels_decoder[1],
-            activation=activation,
-            nr_decoder_blocks=nr_decoder_blocks[1],
-            encoder_decoder_fusion=encoder_decoder_fusion,
-            upsampling_mode=upsampling_mode,
-            num_classes=num_classes,
-        )
-
-        self.decoder_module_3 = DecoderModule(
-            channels_in=channels_decoder[1],
-            channels_dec=channels_decoder[2],
-            activation=activation,
-            nr_decoder_blocks=nr_decoder_blocks[2],
-            encoder_decoder_fusion=encoder_decoder_fusion,
-            upsampling_mode=upsampling_mode,
-            num_classes=num_classes,
-        )
-        out_channels = channels_decoder[2]
-
-        self.conv_out = nn.Conv2d(out_channels, num_classes, kernel_size=3, padding=1)
-
-        # upsample twice with factor 2
-        self.upsample1 = Upsample(mode=upsampling_mode, channels=num_classes)
-        self.upsample2 = Upsample(mode=upsampling_mode, channels=num_classes)
-
-    def forward(self, enc_outs):
-        enc_out, enc_skip_down_16, enc_skip_down_8, enc_skip_down_4 = enc_outs
-
-        out, _ = self.decoder_module_1(enc_out, enc_skip_down_16)
-        out, _ = self.decoder_module_2(out, enc_skip_down_8)
-        out, _ = self.decoder_module_3(out, enc_skip_down_4)
-
-        out = self.conv_out(out)
-        out = self.upsample1(out)
-        out = self.upsample2(out)
-
-        return out
+resnet = {'resnet18': models.resnet18, 'resnet34': models.resnet34, 'resnet50': models.resnet50,
+          'resnet101': models.resnet101, 'resnet152': models.resnet152}
 
 
-class DecoderModule(nn.Module):
-    def __init__(
-        self,
-        channels_in,
-        channels_dec,
-        activation=nn.ReLU(inplace=True),
-        nr_decoder_blocks=1,
-        encoder_decoder_fusion="add",
-        upsampling_mode="bilinear",
-        num_classes=37,
-    ):
-        super().__init__()
-        self.upsampling_mode = upsampling_mode
-        self.encoder_decoder_fusion = encoder_decoder_fusion
-
-        self.conv3x3 = ConvBNAct(
-            channels_in, channels_dec, kernel_size=3, activation=activation
-        )
-
-        blocks = []
-        for _ in range(nr_decoder_blocks):
-            blocks.append(
-                NonBottleneck1D(channels_dec, channels_dec, activation=activation)
-            )
-        self.decoder_blocks = nn.Sequential(*blocks)
-
-        self.upsample = Upsample(mode=upsampling_mode, channels=channels_dec)
-
-        # for pyramid supervision
-        self.side_output = nn.Conv2d(channels_dec, num_classes, kernel_size=1)
-
-    def forward(self, decoder_features, encoder_features):
-        out = self.conv3x3(decoder_features)
-        out = self.decoder_blocks(out)
-
-        if self.training:
-            out_side = self.side_output(out)
+class OSNet(nn.Module):
+    def __init__(self, num_classes, encoder="resnet18", decoder="PSPNet", sizes=(1, 2, 3, 6), psp_size=2048,
+                 deep_features_size=1024):
+        super(OSNet, self).__init__()
+        if encoder in resnet.keys():
+            self.encoder = resnet.get(encoder)(weights=ResNet18_Weights.IMAGENET1K_V1)
         else:
-            out_side = None
+            assert "encoder must be one of 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'"
+        if decoder in ["PSPNet"]:
+            self.decoder = PSPModule(psp_size, 1024, sizes)
+            self.drop_1 = nn.Dropout2d(p=0.3)
 
-        out = self.upsample(out)
+            self.up_1 = PSPUpsample(1024, 256)
+            self.up_2 = PSPUpsample(256, 64)
+            self.up_3 = PSPUpsample(64, 64)
 
-        if self.encoder_decoder_fusion == "add":
-            out += encoder_features
-
-        return out, out_side
-
-
-class Upsample(nn.Module):
-    def __init__(self, mode, channels=None):
-        super(Upsample, self).__init__()
-        self.interp = nn.functional.interpolate
-
-        if mode == "bilinear":
-            self.align_corners = False
-        else:
-            self.align_corners = None
-
-        if "learned-3x3" in mode:
-            # mimic a bilinear interpolation by nearest neigbor upscaling and
-            # a following 3x3 conv. Only works as supposed when the
-            # feature maps are upscaled by a factor 2.
-
-            if mode == "learned-3x3":
-                self.pad = nn.ReplicationPad2d((1, 1, 1, 1))
-                self.conv = nn.Conv2d(
-                    channels, channels, groups=channels, kernel_size=3, padding=0
-                )
-            elif mode == "learned-3x3-zeropad":
-                self.pad = nn.Identity()
-                self.conv = nn.Conv2d(
-                    channels, channels, groups=channels, kernel_size=3, padding=1
-                )
-
-            # kernel that mimics bilinear interpolation
-            w = torch.tensor(
-                [
-                    [
-                        [
-                            [0.0625, 0.1250, 0.0625],
-                            [0.1250, 0.2500, 0.1250],
-                            [0.0625, 0.1250, 0.0625],
-                        ]
-                    ]
-                ]
+            self.drop_2 = nn.Dropout2d(p=0.15)
+            self.final = nn.Sequential(
+                nn.Conv2d(64, num_classes, kernel_size=1),
+                nn.LogSoftmax()
             )
 
-            self.conv.weight = torch.nn.Parameter(torch.cat([w] * channels))
-
-            # set bias to zero
-            with torch.no_grad():
-                self.conv.bias.zero_()
-
-            self.mode = "nearest"
+            self.classifier = nn.Sequential(
+                nn.Linear(deep_features_size, 256),
+                nn.ReLU(),
+                nn.Linear(256, num_classes)
+            )
         else:
-            # define pad and conv just to make the forward function simpler
-            self.pad = nn.Identity()
-            self.conv = nn.Identity()
-            self.mode = mode
+            assert "decoder must be 'PSPNet'"
+        self.num_classes = num_classes
 
     def forward(self, x):
-        size = (int(x.shape[2] * 2), int(x.shape[3] * 2))
-        x = self.interp(x, size, mode=self.mode, align_corners=self.align_corners)
-        x = self.pad(x)
-        x = self.conv(x)
-        return x
+        f = self.encoder(x)
+        print(f)
+        p = self.decoder(f)
+        p = self.drop_1(p)
+
+        p = self.up_1(p)
+        p = self.drop_2(p)
+
+        p = self.up_2(p)
+        p = self.drop_2(p)
+
+        p = self.up_3(p)
+        p = self.drop_2(p)
+
+        auxiliary = F.adaptive_max_pool2d(input=f, output_size=(1, 1)).view(-1, f.size(1))
+
+        return self.final(p), self.classifier(auxiliary)
+
+
+def _make_stage(features, size):
+    prior = nn.AdaptiveAvgPool2d(output_size=(size, size))
+    conv = nn.Conv2d(features, features, kernel_size=1, bias=False)
+    return nn.Sequential(prior, conv)
+
+
+class PSPModule(nn.Module):
+    def __init__(self, features, out_features=1024, sizes=(1, 2, 3, 6)):
+        super().__init__()
+        self.stages = []
+        self.stages = nn.ModuleList([_make_stage(features, size) for size in sizes])
+        self.bottleneck = nn.Conv2d(features * (len(sizes) + 1), out_features, kernel_size=1)
+        self.relu = nn.ReLU()
+
+    def forward(self, feats):
+        h, w = feats.size(2), feats.size(3)
+        priors = [F.upsample(input=stage(feats), size=(h, w), mode='bilinear') for stage in self.stages] + [feats]
+        bottle = self.bottleneck(torch.cat(priors, 1))
+        return self.relu(bottle)
+
+
+class PSPUpsample(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.PReLU()
+        )
+
+    def forward(self, x):
+        h, w = 2 * x.size(2), 2 * x.size(3)
+        p = F.upsample(input=x, size=(h, w), mode='bilinear')
+        return self.conv(p)

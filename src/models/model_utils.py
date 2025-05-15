@@ -12,6 +12,91 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class NonBottleneck1D(nn.Module):
+    """
+    ERFNet-Block
+    Paper:
+    http://www.robesafe.es/personal/eduardo.romera/pdfs/Romera17tits.pdf
+    Implementation from:
+    https://github.com/Eromera/erfnet_pytorch/blob/master/train/erfnet.py
+    """
+
+    expansion = 1
+
+    def __init__(
+        self,
+        inplanes,
+        planes,
+        stride=1,
+        downsample=None,
+        groups=1,
+        base_width=None,
+        dilation=1,
+        norm_layer=None,
+        activation=nn.ReLU(inplace=True),
+        residual_only=False,
+    ):
+        super().__init__()
+        # print(
+        #     "Notice: parameters groups, base_width and norm_layer are "
+        #     "ignored in NonBottleneck1D"
+        # )
+        dropprob = 0
+        self.conv3x1_1 = nn.Conv2d(
+            inplanes, planes, (3, 1), stride=(stride, 1), padding=(1, 0), bias=True
+        )
+        self.conv1x3_1 = nn.Conv2d(
+            planes, planes, (1, 3), stride=(1, stride), padding=(0, 1), bias=True
+        )
+        self.bn1 = nn.BatchNorm2d(planes, eps=1e-03)
+        self.act = activation
+        self.conv3x1_2 = nn.Conv2d(
+            planes,
+            planes,
+            (3, 1),
+            padding=(1 * dilation, 0),
+            bias=True,
+            dilation=(dilation, 1),
+        )
+        self.conv1x3_2 = nn.Conv2d(
+            planes,
+            planes,
+            (1, 3),
+            padding=(0, 1 * dilation),
+            bias=True,
+            dilation=(1, dilation),
+        )
+        self.bn2 = nn.BatchNorm2d(planes, eps=1e-03)
+        self.dropout = nn.Dropout2d(dropprob)
+        self.downsample = downsample
+        self.stride = stride
+        self.residual_only = residual_only
+
+    def forward(self, input):
+        output = self.conv3x1_1(input)
+        output = self.act(output)
+        output = self.conv1x3_1(output)
+        output = self.bn1(output)
+        output = self.act(output)
+
+        output = self.conv3x1_2(output)
+        output = self.act(output)
+        output = self.conv1x3_2(output)
+        output = self.bn2(output)
+
+        if self.dropout.p != 0:
+            output = self.dropout(output)
+
+        if self.downsample is None:
+            identity = input
+        else:
+            identity = self.downsample(input)
+
+        if self.residual_only:
+            return output
+        # +input = identity (residual connection)
+        return self.act(output + identity)
+
 class ConvBNAct(nn.Sequential):
     def __init__(
         self,

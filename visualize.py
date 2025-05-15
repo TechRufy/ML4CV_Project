@@ -35,6 +35,6 @@ def color(annot_path: str, colors: np.ndarray) -> Image.Image:
 
 
 if __name__ == "__main__":
-    annot_path = "train/annotations/training/t1-3/1.png"
+    annot_path = "StreetHazards/train/annotations/t1-3/1.png"
     segm_map = color(annot_path, COLORS)
     segm_map.save("1.png")
