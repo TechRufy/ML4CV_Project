@@ -14,8 +14,8 @@ class StreetHazardsDataset(Dataset):
 
     def __init__(self, split):
         if split in ["train", "test", "val"]:
-            self.label_directory = f"StreetHazards/{split}/annotations"
-            self.img_dir = f"StreetHazards/{split}/images"
+            self.label_directory = f"./data/StreetHazards/{split}/annotations"
+            self.img_dir = f"./data/StreetHazards/{split}/images"
         else:
             assert "split not valid, must be one of ['train', 'test', 'val']"
         self.img_files = []
